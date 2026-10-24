@@ -4,7 +4,7 @@ import numpy as np
 from colossus.halo import concentration as _conc
 from colossus.halo import mass_so
 
-from .cosmology import G, H
+from .cosmology import G, H, rho_crit
 from .lensing import R3
 
 
@@ -41,6 +41,46 @@ def concentration(m200, z):
 def r200(m200, z):
     """r_200c [kpc] for m200 in Msun."""
     return mass_so.M_to_R(np.asarray(m200) * H, z, "200c") / H
+
+
+def nfw_m3d(m200, c, z):
+    """Enclosed-mass function of an NFW halo with mass m200 (200 x critical) and concentration c,
+    and its r200 [kpc]."""
+    r200 = (3 * m200 / (4 * np.pi * 200 * rho_crit(z))) ** (1 / 3)
+    rs = r200 / c
+    return (lambda r: m200 * nfw_m(r, rs, c)), r200
+
+
+def galaxy_halo_m3d(m200, c, z, mstar, re, nu, rmax_fac=10.0):
+    """Total M(<r) of a Hernquist galaxy (a = re / 1.8153) inside an NFW halo with halo response.
+
+    Response of Dutton et al. (2007, ApJ 654, 27): r_f/r_i = [M_i(r_i)/M_f(r_f)]^nu, with nu = 1
+    the adiabatic contraction of Blumenthal et al. (1986), nu = 0 no response, nu < 0 expansion.
+    The condensed baryons are the stars (a fraction f = mstar/m200 of the initial halo); the dark
+    matter is (1 - f) of the NFW halo, extended to rmax_fac x r200.
+    Returns (callable M(<r), rmax).
+    """
+    m_nfw, r200 = nfw_m3d(m200, c, z)
+    a = re / 1.8153
+    m_star = lambda r: mstar * r**2 / (r + a) ** 2
+    f = mstar / m200
+    ri = np.logspace(-4, np.log10(rmax_fac * r200), 600)
+    mi = m_nfw(ri)
+    # vectorised bisection in ln r_f of ln(r_f/r_i) - nu ln[M_i/M_f(r_f)] = 0 (monotonic in r_f)
+    lo, hi = np.log(ri) - 28.0, np.log(ri) + 28.0
+    for _ in range(50):
+        mid = 0.5 * (lo + hi)
+        up = mid - np.log(ri) - nu * np.log(mi / (m_star(np.exp(mid)) + (1 - f) * mi)) > 0
+        hi, lo = np.where(up, mid, hi), np.where(up, lo, mid)
+    lr, lm = 0.5 * (lo + hi), np.log((1 - f) * mi)
+    m_dm = lambda r: np.exp(np.interp(np.log(r), lr, lm, left=-np.inf))
+    rmax = np.exp(lr[-1])
+    return (lambda r: m_star(np.minimum(r, rmax)) + m_dm(np.minimum(r, rmax))), rmax
+
+
+def re_shen03(mstar):
+    """Early-type half-light radius [kpc], Shen et al. (2003, MNRAS 343, 978): 2.88e-6 M^0.56."""
+    return 2.88e-6 * mstar**0.56
 
 
 MOSTER = dict(M10=11.590, M11=1.195, N10=0.0351, N11=-0.0247,

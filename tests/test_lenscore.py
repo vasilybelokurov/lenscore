@@ -87,3 +87,27 @@ def test_per_row_histogram_sums_to_total():
     h2 = Pop.optical_depth(rows, w, qmin=0.1, bins=Pop.SEP_E, dt_bins=Pop.DT_E)
     h2r = Pop.optical_depth(rows, w, qmin=0.1, bins=Pop.SEP_E, dt_bins=Pop.DT_E, per_row=True)
     assert np.allclose(h2r.sum(axis=0), h2)
+
+
+def test_halo_response_dutton07():
+    # nu = 0 leaves the halo unchanged, nu > 0 contracts and nu < 0 expands the inner dark matter,
+    # mass is conserved at large r, and the solution satisfies r_f/r_i = [M_i(r_i)/M_f(r_f)]^nu
+    from scipy.optimize import brentq
+    m200, z, ms, re = 1e12, 0.5, 3e10, 3.0
+    c = P.concentration(m200, z)
+    mnfw, _ = P.nfw_m3d(m200, c, z)
+    a, f = re / 1.8153, ms / m200
+    r = np.array([0.5, 5.0, 50.0])
+    m0, rmax = P.galaxy_halo_m3d(m200, c, z, ms, re, 0.0)
+    assert np.allclose(m0(r) - ms * r**2 / (r + a) ** 2, (1 - f) * mnfw(r), rtol=1e-3)
+    mc, _ = P.galaxy_halo_m3d(m200, c, z, ms, re, 1.0)
+    me, _ = P.galaxy_halo_m3d(m200, c, z, ms, re, -0.5)
+    assert np.all(mc(r[:2]) > m0(r[:2])) and np.all(me(r[:2]) < m0(r[:2]))
+    assert np.allclose([mc(rmax), me(rmax)], m0(rmax), rtol=1e-2)
+    for nu in (-0.5, 0.5, 1.0):
+        m3, _ = P.galaxy_halo_m3d(m200, c, z, ms, re, nu)
+        ri = np.array([0.01, 0.3, 3.0, 30.0])
+        mdm = (1 - f) * mnfw(ri)
+        rf = np.array([brentq(lambda x: m3(x) - ms * x**2 / (x + a) ** 2 - mm, 1e-6, 1e4) for mm in mdm])
+        mf = ms * rf**2 / (rf + a) ** 2 + mdm
+        assert np.allclose(rf / ri, (mnfw(ri) / mf) ** nu, rtol=2e-3)
